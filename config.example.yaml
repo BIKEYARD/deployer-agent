@@ -1,0 +1,152 @@
+# Deployer Agent Configuration
+# Copy this file to config.yaml and edit as needed
+
+# Server settings
+host: "0.0.0.0"
+port: 8000
+debug: false
+
+# Security settings - ALWAYS CHANGE FOR PRODUCTION!
+api_to_agent_signing_key: "your-hmac-key-here"
+agent_to_api_signing_key: "your-hmac-key-here"
+token_expiration_minutes: 60
+
+# Deployer server settings
+deployer_url: "http://localhost"
+
+# Terminal security settings
+terminal_security:
+  # Allowed commands for terminal execution
+  allowed_commands:
+    - ls
+    - cat
+    - grep
+    - tail
+    - head
+    - find
+    - ps
+    - top
+    - htop
+    - du
+    - df
+    - free
+    - uptime
+    - whoami
+    - pwd
+    - date
+    - which
+    - systemctl
+    - service
+    - journalctl
+    - nginx
+    - apache2
+    - php
+    - composer
+    - npm
+    - yarn
+    - git
+    - docker
+    - docker-compose
+  
+  # Forbidden commands (have priority over allowed)
+  forbidden_commands:
+    - rm
+    - rmdir
+    - del
+    - delete
+    - format
+    - fdisk
+    - mkfs
+    - dd
+    - shred
+    - wipe
+    - chmod
+    - chown
+    - passwd
+    - su
+    - sudo
+    - shutdown
+    - reboot
+    - halt
+    - poweroff
+    - init
+  
+  # Maximum command length
+  max_command_length: 500
+  
+  # Allow command arguments (e.g., ls -la)
+  allow_arguments: true
+  
+  # Block command chains (;, &&, ||, |)
+  block_command_chains: true
+
+# S3 Storage configuration (optional)
+# When configured, the agent can generate presigned URLs for secure file uploads/downloads.
+# Credentials stay local on this server and are NEVER exposed to the API or frontend.
+s3:
+  endpoint: ""                    # Leave empty for AWS default, or set custom S3-compatible endpoint
+  region: "eu-central-1"
+  bucket: "deployer-builds"
+  access_key: "AKIAxxxxxxxxxxxxxxxx"
+  secret_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  use_path_style: false           # Set to true for MinIO or other S3-compatible services
+
+# Projects configuration
+projects:
+  # Laravel project example
+  laravel1:
+    name: "Laravel Project 1"
+    path: "/var/www/laravel-project"
+    type: "laravel"
+    run_as: "www-data"  # Optional: run deploy commands as this user (uses sudo -u)
+    config_files:
+      - name: "Env File"
+        path: "/var/www/laravel-project/.env"
+        editable: true
+      - name: "Apache Config"
+        path: "/etc/apache2/sites-available/laravel-project.conf"
+        editable: true
+    deploy_commands:
+      - "cd {project_path}"
+      - "git fetch origin"
+      - "git checkout \"{branch}\""
+      - "git reset --hard origin/{branch}"
+      - "./updater.sh"
+
+  # Next.js project example
+  next1:
+    name: "Next.js Project 1"
+    path: "/var/www/nextjs-project"
+    type: "next"
+    config_files:
+      - name: "Env File"
+        path: "/var/www/nextjs-project/.env.local"
+        editable: true
+      - name: "Nginx Config"
+        path: "/etc/nginx/sites-available/nextjs-project.conf"
+        editable: true
+    deploy_commands:
+      - "cd {project_path}"
+      - "git fetch origin"
+      - "git checkout \"{branch}\""
+      - "git reset --hard origin/{branch}"
+      - "./updater.sh {stand}"
+
+  # Yii project example
+  yii1:
+    name: "Yii Project 1"
+    path: "/var/www/yii-project"
+    type: "yii"
+    config_files:
+      - name: "Main Config"
+        path: "/var/www/yii-project/config/main.php"
+        editable: true
+      - name: "Params Config"
+        path: "/var/www/yii-project/config/params.php"
+        editable: true
+    deploy_commands:
+      - "cd {project_path}"
+      - "git fetch origin"
+      - "git checkout \"{branch}\""
+      - "git reset --hard origin/{branch}"
+      - "./updater.sh"
