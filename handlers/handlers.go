@@ -288,6 +288,36 @@ func StartDeployment(c *gin.Context) {
 	appendOutput(fmt.Sprintf("Starting deployment %s", fullDeploymentID))
 
 	stopUpdates := make(chan struct{})
+	var stopOnce sync.Once
+	safeStopUpdates := func() {
+		stopOnce.Do(func() { close(stopUpdates) })
+	}
+
+	// sendFinalWebhookWithRetry sends the terminal status webhook with retries
+	// to ensure the API always receives the final deploy status.
+	sendFinalWebhookWithRetry := func(deployID, codename, status string, output *string) {
+		const maxRetries = 3
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			code, err := sendDeployWebhook(deployID, codename, status, output)
+			if err != nil {
+				log.Printf("Error sending deploy webhook (%s), attempt %d/%d: %v", status, attempt, maxRetries, err)
+				if attempt < maxRetries {
+					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+					continue
+				}
+				log.Printf("CRITICAL: Failed to send final deploy webhook (%s) after %d attempts for deploy_id=%s", status, maxRetries, deployID)
+				return
+			}
+			if code == http.StatusNoContent || code == http.StatusOK || code == http.StatusConflict {
+				return
+			}
+			log.Printf("Unexpected deploy webhook status (%s): %d for deploy_id=%s, attempt %d/%d", status, code, deployID, attempt, maxRetries)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+		}
+	}
+
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
@@ -303,7 +333,7 @@ func StartDeployment(c *gin.Context) {
 				}
 				if code == http.StatusConflict {
 					log.Printf("Deploy webhook rejected as finalized (409) for deploy_id=%s", req.DeployID)
-					close(stopUpdates)
+					safeStopUpdates()
 					return
 				}
 				if code != http.StatusNoContent && code != http.StatusOK {
@@ -316,17 +346,25 @@ func StartDeployment(c *gin.Context) {
 	}()
 
 	go func() {
+		// Recover from any panic to ensure final webhook is always sent
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in deployment goroutine for deploy_id=%s: %v", req.DeployID, r)
+				appendOutput(fmt.Sprintf("\nInternal error: %v", r))
+				out := getOutputSnapshot()
+				outPtr := &out
+				sendFinalWebhookWithRetry(req.DeployID, req.ProjectID, "failed", outPtr)
+				safeStopUpdates()
+			}
+		}()
+
 		project, exists := cfg.Projects[req.ProjectID]
 		if !exists {
 			appendOutput(fmt.Sprintf("Project %s not found", req.ProjectID))
 			out := getOutputSnapshot()
 			outPtr := &out
-			if code, err := sendDeployWebhook(req.DeployID, req.ProjectID, "failed", outPtr); err != nil {
-				log.Printf("Error sending deploy webhook (failed): %v", err)
-			} else if code != http.StatusNoContent && code != http.StatusOK {
-				log.Printf("Unexpected deploy webhook status (failed): %d for deploy_id=%s", code, req.DeployID)
-			}
-			close(stopUpdates)
+			sendFinalWebhookWithRetry(req.DeployID, req.ProjectID, "failed", outPtr)
+			safeStopUpdates()
 			return
 		}
 
@@ -347,12 +385,8 @@ func StartDeployment(c *gin.Context) {
 		}
 		out := getOutputSnapshot()
 		outPtr := &out
-		if code, err := sendDeployWebhook(req.DeployID, req.ProjectID, finalStatus, outPtr); err != nil {
-			log.Printf("Error sending deploy webhook (%s): %v", finalStatus, err)
-		} else if code != http.StatusNoContent && code != http.StatusOK {
-			log.Printf("Unexpected deploy webhook status (%s): %d for deploy_id=%s", finalStatus, code, req.DeployID)
-		}
-		close(stopUpdates)
+		sendFinalWebhookWithRetry(req.DeployID, req.ProjectID, finalStatus, outPtr)
+		safeStopUpdates()
 	}()
 
 	c.JSON(http.StatusOK, gin.H{
