@@ -1,4 +1,4 @@
-.PHONY: build build-linux build-linux-arm64 build-all clean run deps
+.PHONY: build build-linux build-linux-arm64 build-all clean run deps update
 
 # Binary name
 BINARY_NAME=deployer-agent
@@ -36,6 +36,24 @@ clean:
 	rm -f $(BINARY_NAME)
 	rm -f $(BINARY_NAME)-linux-amd64
 	rm -f $(BINARY_NAME)-linux-arm64
+
+# Update project: pull latest changes, rebuild, and restart service
+update: 
+	@echo "🔄 Updating deployer-agent..."
+	@echo ""
+	@echo "📥 Pulling latest changes from git..."
+	git pull
+	@echo "✅ Git pull completed"
+	@echo ""
+	@echo "🔨 Building project for current platform..."
+	$(MAKE) build
+	@echo "✅ Build completed"
+	@echo ""
+	@echo "🔄 Restarting deployer-agent service..."
+	sudo systemctl restart deployer-agent
+	@echo "✅ Service restarted"
+	@echo ""
+	@echo "✨ Update completed successfully!"
 
 # Install to /opt/deployer-agent (requires sudo)
 install: build-release
