@@ -268,6 +268,18 @@ func StartDeployment(c *gin.Context) {
 
 	log.Printf("Starting deployment: %s", fullDeploymentID)
 
+	// Handshake: prove webhook reachability before committing to a long-running
+	// deploy. If the agent cannot reach the API, fail fast so the UI does not
+	// hang in a silent "deploying" state for minutes.
+	if ackCode, ackErr := sendDeployWebhook(req.DeployID, req.ProjectID, "deploying", nil); ackErr != nil || (ackCode != http.StatusNoContent && ackCode != http.StatusOK && ackCode != http.StatusConflict) {
+		log.Printf("Handshake webhook failed for deploy_id=%s: code=%d err=%v", req.DeployID, ackCode, ackErr)
+		deploymentDataMutex.Lock()
+		delete(deploymentDataStore, uniqueID)
+		deploymentDataMutex.Unlock()
+		c.JSON(http.StatusBadGateway, gin.H{"detail": "Agent cannot deliver webhook to API; aborting deploy."})
+		return
+	}
+
 	var outputMu sync.Mutex
 	fullOutput := ""
 	appendOutput := func(message string) {
