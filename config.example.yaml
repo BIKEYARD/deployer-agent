@@ -14,6 +14,12 @@ token_expiration_minutes: 60
 # Deployer server settings
 deployer_url: "http://localhost"
 
+# Feature flags — disable to forbid config editing / terminal entirely
+# (defence-in-depth, independent of user roles).
+# Default false: must be explicitly enabled.
+config_editing_enabled: false
+terminal_enabled: false
+
 # Terminal security settings
 terminal_security:
   # Allowed commands for terminal execution

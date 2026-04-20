@@ -60,6 +60,8 @@ type Config struct {
 	AgentToAPISigningKey   string             `yaml:"agent_to_api_signing_key"`
 	TokenExpirationMinutes int                `yaml:"token_expiration_minutes"`
 	DeployerURL            string             `yaml:"deployer_url"`
+	ConfigEditingEnabled   bool               `yaml:"config_editing_enabled"`
+	TerminalEnabled        bool               `yaml:"terminal_enabled"`
 	TerminalSecurity       TerminalSecurity   `yaml:"terminal_security"`
 	S3                     S3Config           `yaml:"s3"`
 	Projects               map[string]Project `yaml:"projects"`
@@ -98,6 +100,12 @@ func LoadConfig(configPath string) error {
 	}
 	if deployerURL := os.Getenv("DEPLOYER_URL"); deployerURL != "" {
 		config.DeployerURL = deployerURL
+	}
+	if v := os.Getenv("AGENT_CONFIG_EDITING_ENABLED"); v != "" {
+		config.ConfigEditingEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("AGENT_TERMINAL_ENABLED"); v != "" {
+		config.TerminalEnabled = v == "true" || v == "1"
 	}
 
 	// Set defaults

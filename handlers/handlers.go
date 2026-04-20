@@ -185,8 +185,10 @@ func ListProjects(c *gin.Context) {
 		configFiles := make([]map[string]interface{}, 0)
 		for idx, cf := range project.ConfigFiles {
 			configFiles = append(configFiles, map[string]interface{}{
-				"id":   strconv.Itoa(idx),
-				"name": cf.Name,
+				"id":       strconv.Itoa(idx),
+				"name":     cf.Name,
+				"path":     cf.Path,
+				"editable": cf.Editable,
 			})
 		}
 
@@ -198,7 +200,24 @@ func ListProjects(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"projects": projects})
+	c.JSON(http.StatusOK, gin.H{
+		"projects":                 projects,
+		"config_editing_enabled":   cfg.ConfigEditingEnabled,
+		"terminal_enabled":         cfg.TerminalEnabled,
+	})
+}
+
+// Terminal info endpoint — exposes allowed/forbidden commands so the UI can hint users.
+func GetTerminalInfo(c *gin.Context) {
+	cfg := config.GetConfig()
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":              cfg.TerminalEnabled,
+		"allowed_commands":     cfg.TerminalSecurity.AllowedCommands,
+		"forbidden_commands":   cfg.TerminalSecurity.ForbiddenCommands,
+		"max_command_length":   cfg.TerminalSecurity.MaxCommandLength,
+		"allow_arguments":      cfg.TerminalSecurity.AllowArguments,
+		"block_command_chains": cfg.TerminalSecurity.BlockCommandChains,
+	})
 }
 
 // Deploy request model
@@ -413,6 +432,10 @@ func GetConfigFile(c *gin.Context) {
 	configFileID := c.Param("config_file_id")
 
 	cfg := config.GetConfig()
+	if !cfg.ConfigEditingEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"detail": "Config editing is disabled on this agent"})
+		return
+	}
 
 	project, exists := cfg.Projects[projectID]
 	if !exists {
@@ -468,10 +491,20 @@ func UpdateConfigFile(c *gin.Context) {
 	}
 
 	cfg := config.GetConfig()
+	if !cfg.ConfigEditingEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"detail": "Config editing is disabled on this agent"})
+		return
+	}
 
 	project, exists := cfg.Projects[req.ProjectID]
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"detail": fmt.Sprintf("Project with ID %s was not found", req.ProjectID)})
+		return
+	}
+
+	const maxContentBytes = 1 << 20 // 1 MB
+	if len(req.Content) > maxContentBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"detail": "Config file content exceeds 1MB limit"})
 		return
 	}
 
@@ -518,6 +551,10 @@ func ExecuteTerminalCommand(c *gin.Context) {
 	}
 
 	cfg := config.GetConfig()
+	if !cfg.TerminalEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"detail": "Terminal is disabled on this agent"})
+		return
+	}
 	command := strings.TrimSpace(req.Command)
 
 	// Validate command

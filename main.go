@@ -76,6 +76,7 @@ func main() {
 		protected.POST("/deploy", handlers.StartDeployment)
 		protected.GET("/config/:project_id/:config_file_id", handlers.GetConfigFile)
 		protected.POST("/config", handlers.UpdateConfigFile)
+		protected.GET("/terminal/info", handlers.GetTerminalInfo)
 		protected.POST("/terminal/execute", handlers.ExecuteTerminalCommand)
 		protected.GET("/crontab", handlers.GetCrontab)
 		protected.POST("/crontab", handlers.UpdateCrontab)
