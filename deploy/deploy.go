@@ -104,6 +104,7 @@ func (d *Deployment) RunCommand(command string, cwd string) CommandResult {
 	// Read stdout
 	wg.Add(1)
 	stdoutScanner := bufio.NewScanner(stdout)
+	stdoutScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	go func() {
 		defer wg.Done()
 		for stdoutScanner.Scan() {
@@ -116,12 +117,13 @@ func (d *Deployment) RunCommand(command string, cwd string) CommandResult {
 	// Read stderr
 	wg.Add(1)
 	stderrScanner := bufio.NewScanner(stderr)
+	stderrScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	go func() {
 		defer wg.Done()
 		for stderrScanner.Scan() {
 			line := stderrScanner.Text()
 			stderrData.WriteString(line + "\n")
-			d.Log(fmt.Sprintf("STDERR: %s", line))
+			d.Log(line)
 		}
 	}()
 
