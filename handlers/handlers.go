@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"crypto/rand"
 	"deployer-agent/config"
 	"deployer-agent/deploy"
@@ -201,9 +202,9 @@ func ListProjects(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"projects":                 projects,
-		"config_editing_enabled":   cfg.ConfigEditingEnabled,
-		"terminal_enabled":         cfg.TerminalEnabled,
+		"projects":               projects,
+		"config_editing_enabled": cfg.ConfigEditingEnabled,
+		"terminal_enabled":       cfg.TerminalEnabled,
 	})
 }
 
@@ -542,6 +543,80 @@ type TerminalCommandRequest struct {
 	ProjectID string `json:"project_id"`
 }
 
+type TerminalStreamRequest struct {
+	Command     string `json:"command" binding:"required"`
+	ProjectID   string `json:"project_id"`
+	SessionID   string `json:"session_id" binding:"required"`
+	WebhookPath string `json:"webhook_path" binding:"required"`
+}
+
+func sendTerminalWebhook(sessionID, webhookPath, event string, payload map[string]interface{}) {
+	cfg := config.GetConfig()
+	if cfg.AgentToAPISigningKey == "" {
+		log.Printf("terminal webhook skipped: agent_to_api_signing_key is empty")
+		return
+	}
+
+	data := map[string]interface{}{
+		"session_id": sessionID,
+		"event":      event,
+	}
+	for k, v := range payload {
+		data[k] = v
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("terminal webhook marshal failed: %v", err)
+		return
+	}
+
+	uriPath := webhookPath
+	url := fmt.Sprintf("%s%s", strings.TrimRight(cfg.DeployerURL, "/"), uriPath)
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(jsonData)))
+	if err != nil {
+		log.Printf("terminal webhook request failed: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := security.SignOutgoingRequest(req, jsonData, cfg.AgentToAPISigningKey, uriPath); err != nil {
+		log.Printf("terminal webhook sign failed: %v", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("terminal webhook send failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("terminal webhook rejected: status=%d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func resolveTerminalCommand(command, projectID string) (string, string, error) {
+	cfg := config.GetConfig()
+	if !cfg.TerminalEnabled {
+		return "", "", fmt.Errorf("Terminal is disabled on this agent")
+	}
+
+	command = strings.TrimSpace(command)
+	validationResult := security.ValidateTerminalCommand(command, cfg.TerminalSecurity)
+	if !validationResult.Valid {
+		return "", "", fmt.Errorf("Command is not allowed: %s", validationResult.Error)
+	}
+
+	workingDir := ""
+	if projectID != "" {
+		if project, exists := cfg.Projects[projectID]; exists {
+			workingDir = project.Path
+		}
+	}
+	return validationResult.SanitizedCommand, workingDir, nil
+}
+
 // Execute terminal command endpoint
 func ExecuteTerminalCommand(c *gin.Context) {
 	var req TerminalCommandRequest
@@ -550,30 +625,18 @@ func ExecuteTerminalCommand(c *gin.Context) {
 		return
 	}
 
-	cfg := config.GetConfig()
-	if !cfg.TerminalEnabled {
-		c.JSON(http.StatusForbidden, gin.H{"detail": "Terminal is disabled on this agent"})
-		return
-	}
-	command := strings.TrimSpace(req.Command)
-
-	// Validate command
-	validationResult := security.ValidateTerminalCommand(command, cfg.TerminalSecurity)
-	if !validationResult.Valid {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": fmt.Sprintf("Command is not allowed: %s", validationResult.Error)})
-		return
-	}
-
-	// Determine working directory
-	var workingDir string
-	if req.ProjectID != "" {
-		if project, exists := cfg.Projects[req.ProjectID]; exists {
-			workingDir = project.Path
+	sanitizedCommand, workingDir, err := resolveTerminalCommand(req.Command, req.ProjectID)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "disabled") {
+			status = http.StatusForbidden
 		}
+		c.JSON(status, gin.H{"detail": err.Error()})
+		return
 	}
 
 	// Execute command
-	cmd := exec.Command("sh", "-c", validationResult.SanitizedCommand)
+	cmd := exec.Command("sh", "-c", sanitizedCommand)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
@@ -598,7 +661,97 @@ func ExecuteTerminalCommand(c *gin.Context) {
 		"exit_code": exitCode,
 		"stdout":    string(stdout),
 		"stderr":    stderr,
-		"command":   validationResult.SanitizedCommand,
+		"command":   sanitizedCommand,
+	})
+}
+
+func ExecuteTerminalCommandStream(c *gin.Context) {
+	var req TerminalStreamRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+
+	sanitizedCommand, workingDir, err := resolveTerminalCommand(req.Command, req.ProjectID)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "disabled") {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"detail": err.Error()})
+		return
+	}
+
+	go func() {
+		sendTerminalWebhook(req.SessionID, req.WebhookPath, "started", map[string]interface{}{
+			"command": sanitizedCommand,
+		})
+
+		cmd := exec.Command("sh", "-c", sanitizedCommand)
+		if workingDir != "" {
+			cmd.Dir = workingDir
+		}
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			sendTerminalWebhook(req.SessionID, req.WebhookPath, "finished", map[string]interface{}{"success": false, "exit_code": -1, "stderr": err.Error()})
+			return
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			sendTerminalWebhook(req.SessionID, req.WebhookPath, "finished", map[string]interface{}{"success": false, "exit_code": -1, "stderr": err.Error()})
+			return
+		}
+		if err := cmd.Start(); err != nil {
+			sendTerminalWebhook(req.SessionID, req.WebhookPath, "finished", map[string]interface{}{"success": false, "exit_code": -1, "stderr": err.Error()})
+			return
+		}
+
+		var scanWG sync.WaitGroup
+		scan := func(stream string, r io.Reader) {
+			defer scanWG.Done()
+			scanner := bufio.NewScanner(r)
+			buf := make([]byte, 0, 64*1024)
+			scanner.Buffer(buf, 1024*1024)
+			for scanner.Scan() {
+				sendTerminalWebhook(req.SessionID, req.WebhookPath, "output", map[string]interface{}{
+					"stream": stream,
+					"data":   scanner.Text() + "\n",
+				})
+			}
+			if err := scanner.Err(); err != nil {
+				sendTerminalWebhook(req.SessionID, req.WebhookPath, "output", map[string]interface{}{
+					"stream": "stderr",
+					"data":   err.Error() + "\n",
+				})
+			}
+		}
+		scanWG.Add(2)
+		go scan("stdout", stdout)
+		go scan("stderr", stderr)
+		waitErr := cmd.Wait()
+		scanWG.Wait()
+
+		exitCode := 0
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = -1
+				sendTerminalWebhook(req.SessionID, req.WebhookPath, "output", map[string]interface{}{"stream": "stderr", "data": waitErr.Error() + "\n"})
+			}
+		}
+		sendTerminalWebhook(req.SessionID, req.WebhookPath, "finished", map[string]interface{}{
+			"success":   exitCode == 0,
+			"exit_code": exitCode,
+			"command":   sanitizedCommand,
+		})
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"success":    true,
+		"session_id": req.SessionID,
+		"command":    sanitizedCommand,
 	})
 }
 

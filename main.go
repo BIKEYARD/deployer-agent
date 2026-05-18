@@ -78,6 +78,7 @@ func main() {
 		protected.POST("/config", handlers.UpdateConfigFile)
 		protected.GET("/terminal/info", handlers.GetTerminalInfo)
 		protected.POST("/terminal/execute", handlers.ExecuteTerminalCommand)
+		protected.POST("/terminal/execute-stream", handlers.ExecuteTerminalCommandStream)
 		protected.GET("/crontab", handlers.GetCrontab)
 		protected.POST("/crontab", handlers.UpdateCrontab)
 
